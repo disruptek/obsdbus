@@ -113,11 +113,10 @@ template generator(name: untyped) =
     {.cdecl, exportc, dynlib.} =
     result = pluginName.cstring
 
-expandMacros:
-  generator source
-  generator encoder
-  generator service
-  generator output
+generator source
+generator encoder
+generator service
+generator output
 
 ### registry
 proc registerPlugin(info: ptr ObsSourceInfo; size: csize_t)
