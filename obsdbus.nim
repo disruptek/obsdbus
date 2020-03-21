@@ -50,7 +50,7 @@ type
                ptr ObsOutput
 
   # plugin-specific context
-  Plugin[T: SurfacePtr] = ref object
+  Plugin[T: SurfacePtr] = ptr object
     data: T
     initialized: bool
     stop: ptr OsEvent
@@ -83,6 +83,8 @@ proc runThread[T](payload: Payload[T]) {.thread.} =
 let
   settings {.compileTime.} = ident"settings"
   data {.compileTime.} = ident"data"
+
+# generates a slew of procs; one for each type of payload
 template generator(name: untyped) =
   proc `obsplugin_destroy name`*(plugin: ptr Plugin[ptr `Obs name`])
     {.cdecl, exportc, dynlib.} =
@@ -104,7 +106,8 @@ template generator(name: untyped) =
       return
 
     # create the thread to handle dbus
-    createThread(result.thread, runThread, Payload[ptr `Obs name`](data: result.data))
+    createThread(result.thread, runThread,
+                 Payload[ptr `Obs name`](data: data, plugin: result[]))
 
     # mark the object as initialized for destroy purposes
     result.initialized = true
