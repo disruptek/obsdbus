@@ -8,17 +8,15 @@ import spec
 
 cppIncludes("obs")
 
-defineCppType(ObsModule, "obs_module_t", "obs-module.h")
-
-defineCppType(ObsEncoder, "obs_encoder_t", "obs-module.h")
-defineCppType(ObsSource, "obs_source_t", "obs-module.h")
 defineCppType(ObsOutput, "obs_output_t", "obs-module.h")
+defineCppType(ObsSource, "obs_source_t", "obs-module.h")
+defineCppType(ObsEncoder, "obs_encoder_t", "obs-module.h")
 defineCppType(ObsService, "obs_service_t", "obs-module.h")
 
-defineCppType(ObsServiceInfo, "obs_service_info", "obs-module.h")
 defineCppType(ObsOutputInfo, "obs_output_info", "obs-module.h")
-defineCppType(ObsEncoderInfo, "obs_encoder_info", "obs-module.h")
 defineCppType(ObsSourceInfo, "obs_source_info", "obs-module.h")
+defineCppType(ObsEncoderInfo, "obs_encoder_info", "obs-module.h")
+defineCppType(ObsServiceInfo, "obs_service_info", "obs-module.h")
 
 defineCppType(ObsProperties, "obs_properties_t", "obs-module.h")
 defineCppType(ObsData, "obs_data_t", "obs-module.h")
@@ -28,14 +26,14 @@ defineCppType(OsEvent, "os_event_t", "util/threading.h")
 
 type
   OsEventType = enum Manual, Automatic
+  OsEventPtr = ptr OsEvent
 
-proc os_event_init(eventPtr: ptr ptr OsEvent; typ: OsEventType): cint
-                  {.header: "util/threading.h", cdecl, importcpp.}
-proc os_event_destroy(event: ptr OsEvent)
-                     {.header: "util/threading.h", cdecl, importcpp.}
-proc os_event_try(event: ptr OsEvent)
-                  {.header: "util/threading.h", cdecl, importcpp.}
-
+proc os_event_init(eventPtr: ptr OsEventPtr; typ: OsEventType): cint
+  {.header: "util/threading.h", importc.}
+proc os_event_destroy(event: OsEventPtr)
+  {.header: "util/threading.h", importc.}
+proc os_event_try(event: OsEventPtr)
+  {.header: "util/threading.h", importc.}
 
 const
   pluginName = "DBus"
@@ -53,7 +51,7 @@ type
   Plugin[T: SurfacePtr] = ptr object
     data: T
     initialized: bool
-    stop: ptr OsEvent
+    stop: OsEventPtr
     thread: PluginThread[T]
 
   PluginThread[T] = Thread[Payload[T]]
@@ -63,13 +61,6 @@ type
     data: T
     plugin: Plugin[T]
 
-var
-  obsModulePointer: ptr ObsModule
-  nim_source {.importc, nodecl.}: ObsSourceInfo
-  nim_output {.importc, nodecl.}: ObsOutputInfo
-  nim_encoder {.importc, nodecl.}: ObsEncoderInfo
-  nim_service {.importc, nodecl.}: ObsServiceInfo
-
 ### threading
 proc runThread[T](payload: Payload[T]) {.thread.} =
   let
@@ -77,22 +68,23 @@ proc runThread[T](payload: Payload[T]) {.thread.} =
   while true:
     iface.process
     sleep 1000
-  return
 
 ### plugin procs
 let
   settings {.compileTime.} = ident"settings"
   data {.compileTime.} = ident"data"
 
-# generates a slew of procs; one for each type of payload
-template generator(name: untyped) =
-  proc `obsplugin_destroy name`*(plugin: ptr Plugin[ptr `Obs name`])
+# generates a slew of procs for each type of payload
+template generator(name: untyped; head: string) =
+  proc `obsplugin_destroy _ name`*(plugin: ptr Plugin[ptr `Obs name`])
     {.cdecl, exportc, dynlib.} =
     if plugin != nil:
       dealloc plugin
 
-  proc `obsplugin_create name`*(`settings`: ptr ObsData;
-                                `data`: ptr `Obs name`): ptr Plugin[ptr `Obs name`] {.cdecl, exportc, dynlib.} =
+  proc `obsplugin_create _ name`*(`settings`: ptr ObsData;
+                                  `data`: ptr `Obs name`):
+                                  ptr Plugin[ptr `Obs name`]
+    {.cdecl, exportc, dynlib.} =
     let
       size = sizeof Plugin[ptr `Obs name`]
 
@@ -102,7 +94,7 @@ template generator(name: untyped) =
 
     # setup our signal monitor
     if os_event_init(addr result.stop, Manual) != 0:
-      `obsplugin_destroy name`(result)
+      `obsplugin_destroy _ name`(result)
       return
 
     # create the thread to handle dbus
@@ -112,29 +104,31 @@ template generator(name: untyped) =
     # mark the object as initialized for destroy purposes
     result.initialized = true
 
-  proc `obsplugin_get_name name`*(plugin: ptr Plugin[ptr `Obs name`]): cstring
+  proc `obsplugin_get_name _ name`*(plugin: ptr Plugin[ptr `Obs name`]): cstring
     {.cdecl, exportc, dynlib.} =
     result = pluginName.cstring
 
-generator source
-generator encoder
-generator service
-generator output
+  # setup the object for plugic registration
+  var
+    `nim _ name` {.inject, importc, nodecl.}: `Obs name Info`
 
-### registry
-proc registerPlugin(info: ptr ObsSourceInfo; size: csize_t)
-  {.cdecl, dynlib: obsLibrary, importc: "obs_register_source_s".}
+  # registry
+  proc registerPlugin(info: ptr `Obs name Info`; size: csize_t)
+    {.cdecl, dynlib: obsLibrary, importc: head.}
 
-proc registerPlugin(info: ptr ObsOutputInfo; size: csize_t)
-  {.cdecl, dynlib: obsLibrary, importc: "obs_register_output_s".}
-
-proc registerPlugin(info: ptr ObsEncoderInfo; size: csize_t)
-  {.cdecl, dynlib: obsLibrary, importc: "obs_register_encoder_s".}
-
-proc registerPlugin(info: ptr ObsServiceInfo; size: csize_t)
-  {.cdecl, dynlib: obsLibrary, importc: "obs_register_service_s".}
+expandMacros:
+  generator source, "obs_register_source_s"
+  generator encoder, "obs_register_encoder_s"
+  generator service, "obs_register_service_s"
+  generator output, "obs_register_output_s"
 
 ### module procs
+# a single special pointer to the plugin module
+defineCppType(ObsModule, "obs_module_t", "obs-module.h")
+
+var
+  obsModulePointer: ptr ObsModule
+
 proc obs_module_set_pointer(module: ptr ObsModule) {.cdecl, exportc, dynlib.} =
   obsModulePointer = module
 
@@ -156,30 +150,30 @@ struct obs_source_info nim_source = { 0 };
 nim_source.id           = "nim_source";
 nim_source.type         = OBS_SOURCE_TYPE_INPUT;
 nim_source.output_flags = OBS_SOURCE_VIDEO;
-nim_source.get_name     = obsplugin_get_namesource;
-nim_source.create       = obsplugin_createsource;
-nim_source.destroy      = obsplugin_destroysource;
+nim_source.get_name     = obsplugin_get_name_source;
+nim_source.create       = obsplugin_create_source;
+nim_source.destroy      = obsplugin_destroy_source;
 
 struct obs_output_info nim_output = { 0 };
 nim_output.id           = "nim_output";
 nim_output.flags        = OBS_OUTPUT_AV | OBS_OUTPUT_ENCODED;
-nim_output.get_name     = obsplugin_get_nameoutput;
-nim_output.create       = obsplugin_createoutput;
-nim_output.destroy      = obsplugin_destroyoutput;
+nim_output.get_name     = obsplugin_get_name_output;
+nim_output.create       = obsplugin_create_output;
+nim_output.destroy      = obsplugin_destroy_output;
 
 struct obs_encoder_info nim_encoder = { 0 };
 nim_encoder.id           = "nim_encoder";
 nim_encoder.type         = OBS_ENCODER_VIDEO;
 nim_encoder.codec        = "h264";
-nim_encoder.get_name     = obsplugin_get_nameencoder;
-nim_encoder.create       = obsplugin_createencoder;
-nim_encoder.destroy      = obsplugin_destroyencoder;
+nim_encoder.get_name     = obsplugin_get_name_encoder;
+nim_encoder.create       = obsplugin_create_encoder;
+nim_encoder.destroy      = obsplugin_destroy_encoder;
 
 struct obs_service_info nim_service = { 0 };
 nim_service.id           = "nim_service";
-nim_service.get_name     = obsplugin_get_nameservice;
-nim_service.create       = obsplugin_createservice;
-nim_service.destroy      = obsplugin_destroyservice;
+nim_service.get_name     = obsplugin_get_name_service;
+nim_service.create       = obsplugin_create_service;
+nim_service.destroy      = obsplugin_destroy_service;
 
   """.}
   registerPlugin(addr nim_source, sizeof(ObsSourceInfo).csize_t)
