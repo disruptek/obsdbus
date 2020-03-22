@@ -29,7 +29,7 @@ defineCppType(OsEvent, "os_event_t", "util/threading.h")
 type
   OsEventType = enum Manual, Automatic
 
-proc os_event_init(event: ptr ptr OsEvent; typ: OsEventType): cint
+proc os_event_init(eventPtr: ptr ptr OsEvent; typ: OsEventType): cint
                   {.header: "util/threading.h", cdecl, importcpp.}
 proc os_event_destroy(event: ptr OsEvent)
                      {.header: "util/threading.h", cdecl, importcpp.}
