@@ -1,10 +1,9 @@
-version = "1.0.0"
+version = "1.0.1"
 author = "disruptek"
 description = "obs plugin"
 license = "MIT"
 
 requires "nim >= 1.1.0"
-requires "nimline"
 requires "https://github.com/disruptek/deebus >= 1.0.0"
 
 proc execCmd(cmd: string) =

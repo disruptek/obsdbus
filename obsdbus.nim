@@ -1,96 +1,87 @@
 import std/os
 import std/macros
 
-import nimline
-
 import bus
 import spec
-
-cppIncludes("obs")
-
-defineCppType(ObsOutput, "obs_output_t", "obs-module.h")
-defineCppType(ObsSource, "obs_source_t", "obs-module.h")
-defineCppType(ObsEncoder, "obs_encoder_t", "obs-module.h")
-defineCppType(ObsService, "obs_service_t", "obs-module.h")
-
-defineCppType(ObsOutputInfo, "obs_output_info", "obs-module.h")
-defineCppType(ObsSourceInfo, "obs_source_info", "obs-module.h")
-defineCppType(ObsEncoderInfo, "obs_encoder_info", "obs-module.h")
-defineCppType(ObsServiceInfo, "obs_service_info", "obs-module.h")
-
-defineCppType(ObsProperties, "obs_properties_t", "obs-module.h")
-defineCppType(ObsData, "obs_data_t", "obs-module.h")
-
-defineCppType(OsEvent, "os_event_t", "util/threading.h")
-#defineCppType(OsEventType, "os_event_type", "util/threading.h")
-
-type
-  OsEventType = enum Manual, Automatic
-  OsEventPtr = ptr OsEvent
-
-proc os_event_init(eventPtr: ptr OsEventPtr; typ: OsEventType): cint
-  {.header: "util/threading.h", importc.}
-proc os_event_destroy(event: OsEventPtr)
-  {.header: "util/threading.h", importc.}
-proc os_event_try(event: OsEventPtr)
-  {.header: "util/threading.h", importc.}
 
 const
   pluginName = "DBus"
   obsLibrary {.strdefine.} = "libobs.so"
 
-cppLibs(obsLibrary)
+{.pragma: obsMod, header: "obs-module.h".}
+{.pragma: obsThread, header: "util/threading.h".}
+{.pragma: obsLib, dynlib: obsLibrary.}
 
 type
-  SurfacePtr = ptr ObsSource or
-               ptr ObsEncoder or
-               ptr ObsService or
-               ptr ObsOutput
+  OsEvent {.obsThread, incompleteStruct, importc: "os_event_t".} = object
+  ObsModule {.obsMod, incompleteStruct, importc: "obs_module_t".} = object
+  ObsData {.obsMod, incompleteStruct, importc: "obs_data".} = object
+  ObsProperties {.obsMod, incompleteStruct, importc: "obs_properties_t".} = object
 
-  # plugin-specific context
-  Plugin[T: SurfacePtr] = ptr object
-    data: T
-    initialized: bool
-    stop: OsEventPtr
-    thread: PluginThread[T]
+  OsEventType {.size: sizeof(cint).} = enum Manual, Automatic
+  OsEventPtr = ptr OsEvent
 
-  PluginThread[T] = Thread[Payload[T]]
-
-  # thread-specific context
-  PayLoad[T: SurfacePtr] = ref object
-    data: T
-    plugin: Plugin[T]
-
-### threading
-proc runThread[T](payload: Payload[T]) {.thread.} =
-  let
-    iface = init()
-  while true:
-    iface.process
-    sleep 1000
+proc os_event_init(eventPtr: ptr OsEventPtr; typ: OsEventType): cint
+  {.obsThread, importc.}
+proc os_event_destroy(event: OsEventPtr)
+  {.obsThread, importc.}
+proc os_event_try(event: OsEventPtr)
+  {.obsThread, importc.}
 
 ### plugin procs
-let
-  settings {.compileTime.} = ident"settings"
-  data {.compileTime.} = ident"data"
+when true:
+  let
+    settingsId {.compileTime.} = ident"settings"
+    dataId {.compileTime.} = ident"data"
+    infoId {.compileTime.} = ident"info"
+    sizeId {.compileTime.} = ident"size"
+    pluginId {.compileTime.} = ident"Plugin"
 
 # generates a slew of procs for each type of payload
-template generator(name: untyped; head: string) =
-  proc `obsplugin_destroy _ name`*(plugin: ptr Plugin[ptr `Obs name`])
+template generator2(name: untyped; head: string) =
+  type
+    `obs _ name _ info` {.obsMod, inject,
+                          importc: "obs_" & head & "_info".} = object
+    `obs _ name` {.obsMod, inject, incompleteStruct,
+                   importc: "obs_" & head.} = object
+
+    # plugin-specific context
+    pluginId[T: `obs _ name`] = ptr object
+      data: ptr T
+      initialized: bool
+      stop: OsEventPtr
+      thread: pluginThread[T]
+
+    pluginThread[T: `obs _ name`] = Thread[Payload[T]]
+
+    # thread-specific context
+    PayLoad[T: `obs _ name`] = ref object
+      data: ptr T
+      plugin: pluginId[T]
+
+  ### threading
+  proc runThread[T: `obs _ name`](payload: Payload[T]) {.thread.} =
+    let
+      iface = init()
+    while true:
+      iface.process
+      sleep 1000
+
+  proc `obsplugin_destroy _ name`*(plugin: ptr pluginId[`obs _ name`])
     {.cdecl, exportc, dynlib.} =
     if plugin != nil:
       dealloc plugin
 
-  proc `obsplugin_create _ name`*(`settings`: ptr ObsData;
-                                  `data`: ptr `Obs name`):
-                                  ptr Plugin[ptr `Obs name`]
+  proc `obsplugin_create _ name`*(`settingsId`: ptr ObsData;
+                                  `dataId`: ptr `obs _ name`):
+                                  ptr pluginId[`obs _ name`]
     {.cdecl, exportc, dynlib.} =
     let
-      size = sizeof Plugin[ptr `Obs name`]
+      size = sizeof pluginId[`obs _ name`]
 
     # alloc our state object
-    result = cast[ptr Plugin[ptr `Obs name`]](alloc0(size))
-    result.data = data
+    result = cast[ptr pluginId[`obs _ name`]](alloc0(size))
+    result.data = dataId
 
     # setup our signal monitor
     if os_event_init(addr result.stop, Manual) != 0:
@@ -99,44 +90,43 @@ template generator(name: untyped; head: string) =
 
     # create the thread to handle dbus
     createThread(result.thread, runThread,
-                 Payload[ptr `Obs name`](data: data, plugin: result[]))
+                 Payload[`obs _ name`](data: dataId, plugin: result[]))
 
     # mark the object as initialized for destroy purposes
     result.initialized = true
 
-  proc `obsplugin_get_name _ name`*(plugin: ptr Plugin[ptr `Obs name`]): cstring
+  proc `obsplugin_get_name _ name`*(plugin: ptr pluginId[`obs _ name`]): cstring
     {.cdecl, exportc, dynlib.} =
     result = pluginName.cstring
 
   # setup the object for plugic registration
   var
-    `nim _ name` {.inject, importc, nodecl.}: `Obs name Info`
+    `nim _ name` {.inject, importc, nodecl.}: `obs _ name _ info`
 
   # registry
-  proc registerPlugin(info: ptr `Obs name Info`; size: csize_t)
-    {.cdecl, dynlib: obsLibrary, importc: head.}
+  proc obs_register_plugin(infoId: ptr `obs _ name _ info`; sizeId: csize_t)
+    {.cdecl, dynlib: obsLibrary, importc: "obs_register_" & head & "_s".}
 
 expandMacros:
-  generator source, "obs_register_source_s"
-  generator encoder, "obs_register_encoder_s"
-  generator service, "obs_register_service_s"
-  generator output, "obs_register_output_s"
+  generator2 output, "output"
+generator2 source, "source"
+generator2 encoder, "encoder"
+generator2 service, "service"
 
 ### module procs
-# a single special pointer to the plugin module
-defineCppType(ObsModule, "obs_module_t", "obs-module.h")
-
 var
+  LIBOBS_API_VER {.obsMod, importc.}: uint32
+  # a single special pointer to the plugin module
   obsModulePointer: ptr ObsModule
 
 proc obs_module_set_pointer(module: ptr ObsModule) {.cdecl, exportc, dynlib.} =
   obsModulePointer = module
 
 proc obs_current_module(): ptr ObsModule {.cdecl, exportc, dynlib.} =
-  obsModulePointer
+  result = obsModulePointer
 
 proc obs_module_ver(): uint32 {.cdecl, exportc, dynlib.} =
-  global.LIBOBS_API_VER.to(uint32)
+  result = LIBOBS_API_VER
 
 # https://obsproject.com/docs/reference-sources.html#c.obs_source_info
 # https://obsproject.com/docs/reference-outputs.html#c.obs_output_info
@@ -176,8 +166,8 @@ nim_service.create       = obsplugin_create_service;
 nim_service.destroy      = obsplugin_destroy_service;
 
   """.}
-  registerPlugin(addr nim_source, sizeof(ObsSourceInfo).csize_t)
-  registerPlugin(addr nim_output, sizeof(ObsOutputInfo).csize_t)
-  registerPlugin(addr nim_encoder, sizeof(ObsEncoderInfo).csize_t)
-  registerPlugin(addr nim_service, sizeof(ObsServiceInfo).csize_t)
+  obs_register_plugin(addr nim_source, sizeof(obs_source_info).csize_t)
+  obs_register_plugin(addr nim_output, sizeof(obs_output_info).csize_t)
+  obs_register_plugin(addr nim_encoder, sizeof(obs_encoder_info).csize_t)
+  obs_register_plugin(addr nim_service, sizeof(obs_service_info).csize_t)
   result = true
