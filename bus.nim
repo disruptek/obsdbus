@@ -1,7 +1,7 @@
 import dbus
 import dbus/lowlevel
 
-import pulseauto
+import deebus
 
 import spec
 
